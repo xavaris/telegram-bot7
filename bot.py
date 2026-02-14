@@ -1,202 +1,200 @@
 import os
-import time
 import random
-from datetime import datetime
+import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
-    filters
+    filters,
 )
 
 # ================= CONFIG =================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_ID = int(os.getenv("GROUP_ID"))
+TOPIC_ID = int(os.getenv("TOPIC_ID"))
+VENDOR_NAMES = os.getenv("VENDOR_NAME", "").lower().split(",")
 
-VENDOR_NAMES = [
-    v.lower() for v in os.getenv("VENDOR_NAME", "").split(",")
-]
+LOGO_URL = "https://i.imgur.com/51jA7M9.jpeg"
 
-TARGET_GROUP = -1003831965198
-TARGET_TOPIC = 42
+MAX_DAILY = 2
 
 # ================= MEMORY =================
-LAST_ADS = {}
-USER_LIMITS = {}
 
-DAILY_LIMIT = 2
-DAY_SECONDS = 86400
+daily_counter = {}
+last_group_message_id = None
 
-# ================= SZYFR =================
-MAP = {
-    "a": "@", "e": "3", "i": "!",
-    "o": "0", "s": "$", "y": "¥",
-    "k": "K", "l": "1", "t": "7", "g": "9"
+# ================= STYLE MAP =================
+
+REPLACE_MAP = {
+    "a": "∆",
+    "e": "€",
+    "i": "!",
+    "o": "0",
+    "s": "$",
+    "b": "BV",
+    "c": "K",
+    "u": "V",
 }
 
-OFFER_EMOJIS = ["📦", "🎁", "🛒", "💼", "📬", "🧰"]
-
-def encode(text):
-    return "".join(MAP.get(c.lower(), c).upper() for c in text)
-
-def is_vendor(user):
-    if not user.username:
-        return False
-    return user.username.lower() in VENDOR_NAMES
-
-# ================= KEYBOARDS =================
-def amount_keyboard():
-    rows, row = [], []
-    for i in range(1,11):
-        row.append(InlineKeyboardButton(str(i), callback_data=f"AMOUNT_{i}"))
-        if len(row)==5:
-            rows.append(row)
-            row=[]
-    rows.append(row)
-    return InlineKeyboardMarkup(rows)
-
-def confirm_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ TAK", callback_data="SEND_YES"),
-            InlineKeyboardButton("❌ NIE", callback_data="SEND_NO")
-        ]
-    ])
+def stylize(text):
+    result = ""
+    for ch in text.lower():
+        result += REPLACE_MAP.get(ch, ch)
+    return result.upper()
 
 # ================= START =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not is_vendor(update.message.from_user):
-        await update.message.reply_text(
-            "⛔ Nie masz uprawnień do dodawania ogłoszeń."
-        )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+
+    if not user.username or user.username.lower() not in VENDOR_NAMES:
+        await update.message.reply_text("❌ Nie jesteś uprawnionym vendorem.")
         return
 
-    context.user_data.clear()
+    keyboard = [
+        [InlineKeyboardButton(str(i), callback_data=f"count_{i}")]
+        for i in range(1, 11)
+    ]
+
     await update.message.reply_text(
-        "🛒 Ile masz towarów? (1–10)",
-        reply_markup=amount_keyboard()
+        "💣 Ile masz towarów?\n(Wybierz 1–10)",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= AMOUNT =================
-async def amount_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+# ================= WYBÓR ILOŚCI =================
 
-    context.user_data["amount"] = int(q.data.split("_")[1])
+async def choose_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    count = int(query.data.split("_")[1])
+    context.user_data["count"] = count
     context.user_data["products"] = []
 
-    await q.message.reply_text("Co masz za towar? (1)")
+    await query.message.reply_text("📦 Co masz za towar?")
 
-# ================= PRODUCTS =================
-async def product_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ZBIERANIE PRODUKTÓW =================
 
-    if not is_vendor(update.message.from_user):
+async def collect_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "count" not in context.user_data:
         return
 
-    if "amount" not in context.user_data:
+    products = context.user_data["products"]
+    products.append(update.message.text)
+
+    if len(products) < context.user_data["count"]:
+        await update.message.reply_text("➕ Następny towar:")
         return
 
-    context.user_data["products"].append(
-        encode(update.message.text)
+    keyboard = [
+        [
+            InlineKeyboardButton("🔥 TAK", callback_data="publish"),
+            InlineKeyboardButton("❌ NIE", callback_data="cancel"),
+        ]
+    ]
+
+    await update.message.reply_text(
+        "🚀 Wysłać ogłoszenie na grupę?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-    count = len(context.user_data["products"])
-    total = context.user_data["amount"]
+# ================= PUBLIKACJA =================
 
-    if count < total:
-        await update.message.reply_text(
-            f"Co masz za towar? ({count+1}/{total})"
-        )
-    else:
-        await update.message.reply_text(
-            "📤 Wysłać ogłoszenie na grupę?",
-            reply_markup=confirm_keyboard()
-        )
+async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_group_message_id
 
-# ================= CONFIRM =================
-async def confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
-    if not is_vendor(q.from_user):
+    user = query.from_user
+    username = user.username.lower()
+
+    today = datetime.date.today()
+
+    if username not in daily_counter:
+        daily_counter[username] = {"date": today, "count": 0}
+
+    if daily_counter[username]["date"] != today:
+        daily_counter[username] = {"date": today, "count": 0}
+
+    if daily_counter[username]["count"] >= MAX_DAILY:
+        await query.message.reply_text("❌ Limit 2 ogłoszeń dziennie osiągnięty.")
         return
 
-    user = q.from_user.username.lower()
-    now = time.time()
+    daily_counter[username]["count"] += 1
 
-    if user in USER_LIMITS:
-        first, count = USER_LIMITS[user]
-        if now-first < DAY_SECONDS and count >= DAILY_LIMIT:
-            await q.message.reply_text("⛔ Limit 2 ogłoszeń na 24h.")
-            return
-        if now-first >= DAY_SECONDS:
-            USER_LIMITS[user] = [now,0]
-    else:
-        USER_LIMITS[user] = [now,0]
+    products = context.user_data["products"]
 
-    if q.data == "SEND_NO":
-        context.user_data.clear()
-        await start(update, context)
-        return
+    fire_emojis = ["💥", "🔥", "🚨", "💣", "⚡"]
+    header_emoji = random.choice(fire_emojis)
 
-    emoji = random.choice(OFFER_EMOJIS)
-    time_now = datetime.now().strftime("%H:%M")
-    contact = f"@{q.from_user.username}"
+    now = datetime.datetime.now().strftime("%H:%M")
 
-    text = (
-        "          ┏━━━━━━━━━━━━━━━━━━━━┓\n"
-        "          ┃  ☠️ OSTATNIA SZANSA  ┃\n"
-        "          ┗━━━━━━━━━━━━━━━━━━━━┛\n\n"
-        f"                🕒 {time_now}\n\n"
-        f"                {emoji} OFERTA\n\n"
-        "          ━━━━━━━━━━━━━━━━━━━━━━\n"
-    )
+    text = f"""
+{header_emoji}💥💥 OSTATNIA SZANSA 💥💥{header_emoji}
 
-    for p in context.user_data["products"]:
-        text += f"                • {p}\n"
+⏱ {now}
 
-    text += (
-        "          ━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"                📩 {contact}"
-    )
+🚨 OFERTA 🚨
 
-    if user in LAST_ADS:
+"""
+
+    for p in products:
+        text += f"• {stylize(p)}\n"
+
+    text += f"""
+
+━━━━━━━━━━━━━━━━━━━━
+📩 @{username}
+⚠️ PISZ PO CENĘ
+━━━━━━━━━━━━━━━━━━━━
+"""
+
+    # usuń stare ogłoszenie
+    if last_group_message_id:
         try:
-            await context.bot.delete_message(
-                TARGET_GROUP,
-                LAST_ADS[user]
-            )
+            await context.bot.delete_message(GROUP_ID, last_group_message_id)
         except:
             pass
 
-    USER_LIMITS[user][1] += 1
-
-    msg = await context.bot.send_message(
-        chat_id=TARGET_GROUP,
-        message_thread_id=TARGET_TOPIC,
-        text=text
+    msg = await context.bot.send_photo(
+        chat_id=GROUP_ID,
+        message_thread_id=TOPIC_ID,
+        photo=LOGO_URL,
+        caption=text
     )
 
-    LAST_ADS[user] = msg.message_id
+    last_group_message_id = msg.message_id
+
     context.user_data.clear()
 
-    await q.message.reply_text("✅ Ogłoszenie wysłane!")
+    await query.message.reply_text("✅ Ogłoszenie opublikowane.")
+
+# ================= ANULUJ =================
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.clear()
+    await query.message.reply_text("↩️ Anulowano. /start aby zacząć ponownie.")
 
 # ================= MAIN =================
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(amount_handler, pattern="^AMOUNT_"))
-    app.add_handler(CallbackQueryHandler(confirm_handler, pattern="^SEND_"))
-    app.add_handler(
-        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, product_handler)
-    )
+    app.add_handler(CallbackQueryHandler(choose_count, pattern="^count_"))
+    app.add_handler(CallbackQueryHandler(publish, pattern="^publish$"))
+    app.add_handler(CallbackQueryHandler(cancel, pattern="^cancel$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_products))
 
-    print("PREMIUM VENDOR BOT STARTED")
+    print("🔥 PREMIUM MARKET BOT STARTED 🔥")
     app.run_polling()
 
 if __name__ == "__main__":
