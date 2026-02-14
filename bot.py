@@ -15,10 +15,10 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-TOPIC_ID = int(os.getenv("TOPIC_ID"))
+TOPIC_ID = int(os.getenv("TOPIC_ID"))            
 VENDOR_NAMES = os.getenv("VENDOR_NAME", "").lower().split(",")
 
-LOGO_URL = "https://i.imgur.com/51jA7M9.jpeg"
+LOGO_URL = "https://dump.li/image/get/39e68489b1f1c9e1.png"
 
 MAX_DAILY = 2
 
@@ -199,3 +199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
