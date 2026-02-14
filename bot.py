@@ -1,50 +1,74 @@
 import os
 import random
 import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
-    filters,
+    filters
 )
 
 # ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-TOPIC_ID = int(os.getenv("TOPIC_ID"))            
+TOPIC_ID = int(os.getenv("TOPIC_ID"))
 VENDOR_NAMES = os.getenv("VENDOR_NAME", "").lower().split(",")
 
-LOGO_URL = "https://dump.li/image/get/39e68489b1f1c9e1.png"
+LOGO_URL = "https://i.imgur.com/51jA7M9.jpeg"
 
 MAX_DAILY = 2
 
 # ================= MEMORY =================
 
 daily_counter = {}
-last_group_message_id = None
+last_message_id = {}
 
-# ================= STYLE MAP =================
+# ================= MAPOWANIE ZNAKÓW =================
 
 REPLACE_MAP = {
-    "a": "∆",
-    "e": "€",
-    "i": "!",
-    "o": "0",
-    "s": "$",
-    "b": "BV",
-    "c": "K",
-    "u": "V",
+    "a": "Å",
+    "e": "Ë",
+    "i": "Ï",
+    "o": "Ø",
+    "u": "Ü",
+    "s": "Ś",
+    "c": "Ç",
 }
 
 def stylize(text):
-    result = ""
-    for ch in text.lower():
-        result += REPLACE_MAP.get(ch, ch)
-    return result.upper()
+    out = ""
+    for c in text.lower():
+        out += REPLACE_MAP.get(c, c)
+    return out.upper()
+
+# ================= IKONY PRODUKTÓW =================
+
+ICONS = {
+    "weed": "🌿",
+    "buch": "🌿",
+    "marihuana": "🌿",
+    "kokaina": "❄️",
+    "koks": "❄️",
+    "xanax": "💊",
+    "tabletki": "💊",
+    "mdma": "💊",
+    "lsd": "🧪",
+}
+
+def pick_icon(name):
+    n = name.lower()
+    for k, v in ICONS.items():
+        if k in n:
+            return v
+    return "🔹"
 
 # ================= START =================
 
@@ -52,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
 
     if not user.username or user.username.lower() not in VENDOR_NAMES:
-        await update.message.reply_text("❌ Nie jesteś uprawnionym vendorem.")
+        await update.message.reply_text("❌ Nie masz uprawnień.")
         return
 
     keyboard = [
@@ -61,103 +85,95 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "💣 Ile masz towarów?\n(Wybierz 1–10)",
+        "Ile masz towarów? (1–10)",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ================= WYBÓR ILOŚCI =================
 
 async def choose_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
-    count = int(query.data.split("_")[1])
+    count = int(q.data.split("_")[1])
     context.user_data["count"] = count
     context.user_data["products"] = []
 
-    await query.message.reply_text("📦 Co masz za towar?")
+    await q.message.reply_text("Podaj nazwę towaru:")
 
-# ================= ZBIERANIE PRODUKTÓW =================
+# ================= ZBIERANIE =================
 
-async def collect_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "count" not in context.user_data:
         return
 
-    products = context.user_data["products"]
-    products.append(update.message.text)
+    context.user_data["products"].append(update.message.text)
 
-    if len(products) < context.user_data["count"]:
-        await update.message.reply_text("➕ Następny towar:")
+    if len(context.user_data["products"]) < context.user_data["count"]:
+        await update.message.reply_text("Następny towar:")
         return
 
-    keyboard = [
+    kb = [
         [
-            InlineKeyboardButton("🔥 TAK", callback_data="publish"),
-            InlineKeyboardButton("❌ NIE", callback_data="cancel"),
+            InlineKeyboardButton("✅ WYŚLIJ", callback_data="send"),
+            InlineKeyboardButton("❌ ANULUJ", callback_data="cancel")
         ]
     ]
 
     await update.message.reply_text(
-        "🚀 Wysłać ogłoszenie na grupę?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "Wysłać ogłoszenie?",
+        reply_markup=InlineKeyboardMarkup(kb)
     )
 
 # ================= PUBLIKACJA =================
 
 async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_group_message_id
+    q = update.callback_query
+    await q.answer()
 
-    query = update.callback_query
-    await query.answer()
-
-    user = query.from_user
-    username = user.username.lower()
-
+    user = q.from_user.username.lower()
     today = datetime.date.today()
 
-    if username not in daily_counter:
-        daily_counter[username] = {"date": today, "count": 0}
+    if user not in daily_counter:
+        daily_counter[user] = {"date": today, "count": 0}
 
-    if daily_counter[username]["date"] != today:
-        daily_counter[username] = {"date": today, "count": 0}
+    if daily_counter[user]["date"] != today:
+        daily_counter[user] = {"date": today, "count": 0}
 
-    if daily_counter[username]["count"] >= MAX_DAILY:
-        await query.message.reply_text("❌ Limit 2 ogłoszeń dziennie osiągnięty.")
+    if daily_counter[user]["count"] >= MAX_DAILY:
+        await q.message.reply_text("Limit 2 ogłoszeń na dziś.")
         return
 
-    daily_counter[username]["count"] += 1
-
-    products = context.user_data["products"]
-
-    fire_emojis = ["💥", "🔥", "🚨", "💣", "⚡"]
-    header_emoji = random.choice(fire_emojis)
+    daily_counter[user]["count"] += 1
 
     now = datetime.datetime.now().strftime("%H:%M")
 
     text = f"""
-{header_emoji}💥💥 OSTATNIA SZANSA 💥💥{header_emoji}
+💥💥 OSTATNIA SZANSA 💥💥
 
 ⏱ {now}
 
-🚨 OFERTA 🚨
+🚨 **OFERTA** 🚨
 
 """
 
-    for p in products:
-        text += f"• {stylize(p)}\n"
+    for p in context.user_data["products"]:
+        icon = pick_icon(p)
+        text += f"{icon} {stylize(p)}\n"
 
     text += f"""
 
-━━━━━━━━━━━━━━━━━━━━
-📩 @{username}
-⚠️ PISZ PO CENĘ
-━━━━━━━━━━━━━━━━━━━━
+📩 @{user}
+⚠️ **PISZ PO CENĘ**
 """
 
-    # usuń stare ogłoszenie
-    if last_group_message_id:
+    # usuń stare
+    if user in last_message_id:
         try:
-            await context.bot.delete_message(GROUP_ID, last_group_message_id)
+            await context.bot.delete_message(
+                GROUP_ID,
+                last_message_id[user]
+            )
         except:
             pass
 
@@ -165,23 +181,22 @@ async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=GROUP_ID,
         message_thread_id=TOPIC_ID,
         photo=LOGO_URL,
-        caption=text
+        caption=text,
+        parse_mode="Markdown"
     )
 
-    last_group_message_id = msg.message_id
-
+    last_message_id[user] = msg.message_id
     context.user_data.clear()
 
-    await query.message.reply_text("✅ Ogłoszenie opublikowane.")
+    await q.message.reply_text("✅ Ogłoszenie wysłane.")
 
-# ================= ANULUJ =================
+# ================= CANCEL =================
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
+    q = update.callback_query
+    await q.answer()
     context.user_data.clear()
-    await query.message.reply_text("↩️ Anulowano. /start aby zacząć ponownie.")
+    await q.message.reply_text("Anulowano. /start")
 
 # ================= MAIN =================
 
@@ -190,13 +205,12 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(choose_count, pattern="^count_"))
-    app.add_handler(CallbackQueryHandler(publish, pattern="^publish$"))
+    app.add_handler(CallbackQueryHandler(publish, pattern="^send$"))
     app.add_handler(CallbackQueryHandler(cancel, pattern="^cancel$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_products))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect))
 
-    print("🔥 PREMIUM MARKET BOT STARTED 🔥")
+    print("MARKET BOT READY")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-
