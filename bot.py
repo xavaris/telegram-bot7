@@ -14,7 +14,10 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-VENDOR_IDS = [int(x) for x in os.getenv("VENDOR_ID").split(",")]
+
+VENDOR_NAMES = [
+    v.lower() for v in os.getenv("VENDOR_NAME", "").split(",")
+]
 
 TARGET_GROUP = -1003831965198
 TARGET_TOPIC = 42
@@ -38,6 +41,11 @@ OFFER_EMOJIS = ["📦", "🎁", "🛒", "💼", "📬", "🧰"]
 def encode(text):
     return "".join(MAP.get(c.lower(), c).upper() for c in text)
 
+def is_vendor(user):
+    if not user.username:
+        return False
+    return user.username.lower() in VENDOR_NAMES
+
 # ================= KEYBOARDS =================
 def amount_keyboard():
     rows, row = [], []
@@ -60,8 +68,10 @@ def confirm_keyboard():
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if update.message.from_user.id not in VENDOR_IDS:
-        await update.message.reply_text("⛔ Brak uprawnień do dodawania ogłoszeń.")
+    if not is_vendor(update.message.from_user):
+        await update.message.reply_text(
+            "⛔ Nie masz uprawnień do dodawania ogłoszeń."
+        )
         return
 
     context.user_data.clear()
@@ -83,19 +93,23 @@ async def amount_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= PRODUCTS =================
 async def product_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if update.message.from_user.id not in VENDOR_IDS:
+    if not is_vendor(update.message.from_user):
         return
 
     if "amount" not in context.user_data:
         return
 
-    context.user_data["products"].append(encode(update.message.text))
+    context.user_data["products"].append(
+        encode(update.message.text)
+    )
 
     count = len(context.user_data["products"])
     total = context.user_data["amount"]
 
     if count < total:
-        await update.message.reply_text(f"Co masz za towar? ({count+1}/{total})")
+        await update.message.reply_text(
+            f"Co masz za towar? ({count+1}/{total})"
+        )
     else:
         await update.message.reply_text(
             "📤 Wysłać ogłoszenie na grupę?",
@@ -107,21 +121,21 @@ async def confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    user_id = q.from_user.id
-    now = time.time()
-
-    if user_id not in VENDOR_IDS:
+    if not is_vendor(q.from_user):
         return
 
-    if user_id in USER_LIMITS:
-        first, count = USER_LIMITS[user_id]
+    user = q.from_user.username.lower()
+    now = time.time()
+
+    if user in USER_LIMITS:
+        first, count = USER_LIMITS[user]
         if now-first < DAY_SECONDS and count >= DAILY_LIMIT:
             await q.message.reply_text("⛔ Limit 2 ogłoszeń na 24h.")
             return
         if now-first >= DAY_SECONDS:
-            USER_LIMITS[user_id] = [now,0]
+            USER_LIMITS[user] = [now,0]
     else:
-        USER_LIMITS[user_id] = [now,0]
+        USER_LIMITS[user] = [now,0]
 
     if q.data == "SEND_NO":
         context.user_data.clear()
@@ -149,13 +163,16 @@ async def confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"                📩 {contact}"
     )
 
-    if user_id in LAST_ADS:
+    if user in LAST_ADS:
         try:
-            await context.bot.delete_message(TARGET_GROUP, LAST_ADS[user_id])
+            await context.bot.delete_message(
+                TARGET_GROUP,
+                LAST_ADS[user]
+            )
         except:
             pass
 
-    USER_LIMITS[user_id][1] += 1
+    USER_LIMITS[user][1] += 1
 
     msg = await context.bot.send_message(
         chat_id=TARGET_GROUP,
@@ -163,7 +180,7 @@ async def confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=text
     )
 
-    LAST_ADS[user_id] = msg.message_id
+    LAST_ADS[user] = msg.message_id
     context.user_data.clear()
 
     await q.message.reply_text("✅ Ogłoszenie wysłane!")
@@ -175,7 +192,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(amount_handler, pattern="^AMOUNT_"))
     app.add_handler(CallbackQueryHandler(confirm_handler, pattern="^SEND_"))
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, product_handler))
+    app.add_handler(
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, product_handler)
+    )
 
     print("PREMIUM VENDOR BOT STARTED")
     app.run_polling()
